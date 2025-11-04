@@ -24,8 +24,8 @@ type Slotted struct {
 	body   []byte
 }
 
-func (s *Slotted) Capacity() int {
-	return len(s.body)
+func (s *Slotted) Capacity() uint16 {
+	return uint16(len(s.body))
 }
 
 func (s *Slotted) NumSlots() uint16 {
@@ -52,10 +52,26 @@ func (s *Slotted) Data(pointer *Pointer) []byte {
 	return s.body[begin:end]
 }
 
-func (s *Slotted) Insert() {}
+func (s *Slotted) Insert(index int, len uint) {
+	if s.FreeSpace() < uint16(unsafe.Sizeof(Pointer{}))+uint16(len) {
+		return
+	}
+	numSlotsOrigin := s.NumSlots()
+	s.header.FreeSpaceOffset -= uint16(len)
+	s.header.NumSlots += 1
+	freeSpaceOffset := s.header.FreeSpaceOffset
+	for i := index; i < int(numSlotsOrigin); i += 1 {
+		s.
+	}
+	return
+}
 
 func (s *Slotted) Remove(index int) {
-
+	s.body = append(s.body[:index], s.body[index+1:]...)
 }
 
 func (s *Slotted) Resize() {}
+
+func (s *Slotted) Index(idx int) []byte {
+	return s.Data(s.Pointers()[idx])
+}
