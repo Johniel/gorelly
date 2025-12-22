@@ -213,3 +213,46 @@ func (eios *ExecIndexOnlyScan) Next(bufmgr *buffer.BufferPoolManager) (Tuple, bo
 	tuple.Decode(pkeyBytes, &result)
 	return result, true, nil
 }
+
+type Project struct {
+	InnerPlan     PlanNode
+	ColumnIndices []int
+}
+
+func (p *Project) Start(bufmgr *buffer.BufferPoolManager) (Executor, error) {
+	innerIter, err := p.InnerPlan.Start(bufmgr)
+	if err != nil {
+		return nil, err
+	}
+	return &ExecProject{
+		innerIter:     innerIter,
+		columnIndices: p.ColumnIndices,
+	}, nil
+}
+
+type ExecProject struct {
+	innerIter     Executor
+	columnIndices []int
+}
+
+func (ep *ExecProject) Next(bufmgr *buffer.BufferPoolManager) (Tuple, bool, error) {
+	inputTuple, ok, err := ep.innerIter.Next(bufmgr)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, nil
+	}
+
+	result := make([][]byte, len(ep.columnIndices))
+	for i, colIdx := range ep.columnIndices {
+		if colIdx < 0 || colIdx >= len(inputTuple) {
+			result[i] = []byte{}
+		} else {
+			result[i] = make([]byte, len(inputTuple[colIdx]))
+			copy(result[i], inputTuple[colIdx])
+		}
+	}
+
+	return result, true, nil
+}
