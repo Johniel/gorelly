@@ -145,6 +145,14 @@ func (l *Leaf) Update(slotID int, newValue []byte) bool {
 	return true
 }
 
+func (l *Leaf) Delete(slotID int) bool {
+	if slotID >= l.NumPairs() {
+		return false
+	}
+	l.body.Remove(slotID)
+	return true
+}
+
 func (l *Leaf) IsHalfFull() bool {
 	return 2*l.body.FreeSpace() < l.body.Capacity()
 }

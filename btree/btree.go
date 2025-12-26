@@ -264,6 +264,51 @@ func (bt *BTree) Update(bufmgr *buffer.BufferPoolManager, key []byte, newValue [
 	return bt.updateInternal(bufmgr, rootBuffer, key, newValue)
 }
 
+// It returns ErrKeyNotFound if the key doesn't exist.
+func (bt *BTree) Delete(bufmgr *buffer.BufferPoolManager, key []byte) error {
+	metaBuffer, err := bufmgr.FetchBuffer(bt.MetaPageID)
+	if err != nil {
+		return err
+	}
+	meta := NewMeta(metaBuffer.Page[:])
+	rootPageId := meta.RootPageID()
+	rootBuffer, err := bufmgr.FetchBuffer(rootPageId)
+	if err != nil {
+		return err
+	}
+
+	return bt.deleteInternal(bufmgr, rootBuffer, key)
+}
+
+func (bt *BTree) deleteInternal(bufmgr *buffer.BufferPoolManager, nodeBuf *buffer.Buffer, key []byte) error {
+	node := NewNode(nodeBuf.Page[:])
+
+	if node.IsLeaf() {
+		leafNode := node.AsLeaf()
+		slotID, err := leafNode.SearchSlotID(key)
+		if err != nil {
+			return ErrKeyNotFound
+		}
+
+		if leafNode.Delete(slotID) {
+			nodeBuf.IsDirty = true
+			return nil
+		}
+		return ErrKeyNotFound
+	} else if node.IsBranch() {
+		internalNode := node.AsBranch()
+		childIdx := internalNode.SearchChildIdx(key)
+		childPageId := internalNode.ChildAt(childIdx)
+		childNodeBuffer, err := bufmgr.FetchBuffer(childPageId)
+		if err != nil {
+			return err
+		}
+
+		return bt.deleteInternal(bufmgr, childNodeBuffer, key)
+	}
+	panic("unknown node type")
+}
+
 func (bt *BTree) updateInternal(bufmgr *buffer.BufferPoolManager, nodeBuf *buffer.Buffer, key []byte, newValue []byte) error {
 	node := NewNode(nodeBuf.Page[:])
 

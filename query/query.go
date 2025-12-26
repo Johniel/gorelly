@@ -3,6 +3,8 @@
 package query
 
 import (
+	"sort"
+
 	"github.com/Johniel/gorelly/btree"
 	"github.com/Johniel/gorelly/buffer"
 	"github.com/Johniel/gorelly/disk"
@@ -276,4 +278,125 @@ func (ep *ExecProject) Next(bufmgr *buffer.BufferPoolManager) (Tuple, bool, erro
 	}
 
 	return result, true, nil
+}
+
+// SortKey specifies a column to sort by and the sort direction.
+type SortKey struct {
+	ColumnIndex int  // Index of the column to sort by (0-based)
+	Ascending   bool // true for ascending order, false for descending order
+}
+
+// Sort performs sorting on tuples from an inner plan.
+// It sorts tuples based on the specified sort keys.
+// Multiple sort keys can be specified for multi-column sorting.
+type Sort struct {
+	InnerPlan PlanNode  // The inner plan node to sort
+	SortKeys  []SortKey // Sort keys specifying columns and sort directions
+}
+
+func (s *Sort) Start(bufmgr *buffer.BufferPoolManager) (Executor, error) {
+	innerIter, err := s.InnerPlan.Start(bufmgr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read all tuples from inner executor
+	var tuples []Tuple
+	for {
+		tup, ok, err := innerIter.Next(bufmgr)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		// Make a deep copy of the tuple
+		tupleCopy := make([][]byte, len(tup))
+		for i := range tup {
+			tupleCopy[i] = make([]byte, len(tup[i]))
+			copy(tupleCopy[i], tup[i])
+		}
+		tuples = append(tuples, tupleCopy)
+	}
+
+	// Sort tuples
+	sort.Slice(tuples, func(i, j int) bool {
+		return compareTuples(tuples[i], tuples[j], s.SortKeys) < 0
+	})
+
+	return &ExecSort{
+		tuples:  tuples,
+		current: 0,
+	}, nil
+}
+
+// ExecSort is the executor for sort operations.
+type ExecSort struct {
+	tuples  []Tuple // Sorted tuples
+	current int     // Current position in the sorted tuples
+}
+
+func (es *ExecSort) Next(bufmgr *buffer.BufferPoolManager) (Tuple, bool, error) {
+	if es.current >= len(es.tuples) {
+		return nil, false, nil
+	}
+
+	// Return a copy of the current tuple
+	tup := es.tuples[es.current]
+	result := make([][]byte, len(tup))
+	for i := range tup {
+		result[i] = make([]byte, len(tup[i]))
+		copy(result[i], tup[i])
+	}
+
+	es.current++
+	return result, true, nil
+}
+
+// compareTuples compares two tuples based on the specified sort keys.
+// Returns -1 if a < b, 0 if a == b, 1 if a > b.
+func compareTuples(a, b Tuple, sortKeys []SortKey) int {
+	for _, key := range sortKeys {
+		colIdx := key.ColumnIndex
+		if colIdx < 0 || colIdx >= len(a) || colIdx >= len(b) {
+			// Invalid column index, treat as equal
+			continue
+		}
+
+		// Compare the column values
+		cmp := compareBytes(a[colIdx], b[colIdx])
+		if cmp != 0 {
+			// If descending order, reverse the comparison
+			if !key.Ascending {
+				cmp = -cmp
+			}
+			return cmp
+		}
+		// If equal, continue to next sort key
+	}
+	return 0 // All sort keys are equal
+}
+
+// compareBytes compares two byte slices lexicographically.
+// Returns -1 if a < b, 0 if a == b, 1 if a > b.
+func compareBytes(a, b []byte) int {
+	minLen := len(a)
+	if len(b) < minLen {
+		minLen = len(b)
+	}
+	for i := 0; i < minLen; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
 }
