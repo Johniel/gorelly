@@ -1,29 +1,30 @@
-package branch
+package internal
 
 import (
 	"encoding/binary"
-	"github.com/Johniel/gorelly/disk"
 	"reflect"
 	"testing"
+
+	"github.com/Johniel/gorelly/disk"
 )
 
-func TestBranchInsertSearch(t *testing.T) {
+func TestInternalNodeInsertSearch(t *testing.T) {
 	data := make([]byte, 100)
-	branch := NewBranch(data)
+	node := NewInternalNode(data)
 
 	key5 := make([]byte, 8)
 	binary.BigEndian.PutUint64(key5, 5)
-	branch.Initialize(key5, disk.PageID(1), disk.PageID(2))
+	node.Initialize(key5, disk.PageID(1), disk.PageID(2))
 
 	key8 := make([]byte, 8)
 	binary.BigEndian.PutUint64(key8, 8)
-	if !branch.Insert(1, key8, disk.PageID(3)) {
+	if !node.Insert(1, key8, disk.PageID(3)) {
 		t.Fatal("failed to insert key8")
 	}
 
 	key11 := make([]byte, 8)
 	binary.BigEndian.PutUint64(key11, 11)
-	if !branch.Insert(2, key11, disk.PageID(4)) {
+	if !node.Insert(2, key11, disk.PageID(4)) {
 		t.Fatal("failed to insert key11")
 	}
 
@@ -41,70 +42,70 @@ func TestBranchInsertSearch(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := branch.SearchChild(tt.key)
+		result := node.SearchChild(tt.key)
 		if result != tt.expected {
-			t.Errorf("key %d: expected PageID(%d), got PageID(%d)",
+			t.Errorf("key %d: expected PageId(%d), got PageId(%d)",
 				binary.BigEndian.Uint64(tt.key), tt.expected.ToU64(), result.ToU64())
 		}
 	}
 }
 
-func TestBranchSplit(t *testing.T) {
+func TestInternalNodeSplit(t *testing.T) {
 	data := make([]byte, 100)
-	branch := NewBranch(data)
+	node := NewInternalNode(data)
 
 	key5 := make([]byte, 8)
 	binary.BigEndian.PutUint64(key5, 5)
-	branch.Initialize(key5, disk.PageID(1), disk.PageID(2))
+	node.Initialize(key5, disk.PageID(1), disk.PageID(2))
 
 	key8 := make([]byte, 8)
 	binary.BigEndian.PutUint64(key8, 8)
-	if !branch.Insert(1, key8, disk.PageID(3)) {
+	if !node.Insert(1, key8, disk.PageID(3)) {
 		t.Fatal("failed to insert key8")
 	}
 
 	key11 := make([]byte, 8)
 	binary.BigEndian.PutUint64(key11, 11)
-	if !branch.Insert(2, key11, disk.PageID(4)) {
+	if !node.Insert(2, key11, disk.PageID(4)) {
 		t.Fatal("failed to insert key11")
 	}
 
 	data2 := make([]byte, 100)
-	branch2 := NewBranch(data2)
+	node2 := NewInternalNode(data2)
 	key10 := make([]byte, 8)
 	binary.BigEndian.PutUint64(key10, 10)
-	midKey := branch.SplitInsert(branch2, key10, disk.PageID(5))
+	midKey := node.SplitInsert(node2, key10, disk.PageID(5))
 
 	expectedMidKey := makeUint64Key(8)
 	if !reflect.DeepEqual(expectedMidKey, midKey) {
 		t.Errorf("mid key: expected %v, got %v", expectedMidKey, midKey)
 	}
 
-	if branch.NumPairs() != 2 {
-		t.Errorf("branch num_pairs: expected 2, got %d", branch.NumPairs())
+	if node.NumPairs() != 2 {
+		t.Errorf("node num_pairs: expected 2, got %d", node.NumPairs())
 	}
-	if branch2.NumPairs() != 1 {
-		t.Errorf("branch2 num_pairs: expected 1, got %d", branch2.NumPairs())
+	if node2.NumPairs() != 1 {
+		t.Errorf("node2 num_pairs: expected 1, got %d", node2.NumPairs())
 	}
 
 	tests := []struct {
-		branch   *Branch
+		node     *InternalNode
 		key      []byte
 		expected disk.PageID
 	}{
-		{branch2, makeUint64Key(1), disk.PageID(1)},
-		{branch2, makeUint64Key(5), disk.PageID(3)},
-		{branch2, makeUint64Key(6), disk.PageID(3)},
-		{branch, makeUint64Key(9), disk.PageID(5)},
-		{branch, makeUint64Key(10), disk.PageID(4)},
-		{branch, makeUint64Key(11), disk.PageID(2)},
-		{branch, makeUint64Key(12), disk.PageID(2)},
+		{node2, makeUint64Key(1), disk.PageID(1)},
+		{node2, makeUint64Key(5), disk.PageID(3)},
+		{node2, makeUint64Key(6), disk.PageID(3)},
+		{node, makeUint64Key(9), disk.PageID(5)},
+		{node, makeUint64Key(10), disk.PageID(4)},
+		{node, makeUint64Key(11), disk.PageID(2)},
+		{node, makeUint64Key(12), disk.PageID(2)},
 	}
 
 	for _, tt := range tests {
-		result := tt.branch.SearchChild(tt.key)
+		result := tt.node.SearchChild(tt.key)
 		if result != tt.expected {
-			t.Errorf("branch key %d: expected PageID(%d), got PageID(%d)",
+			t.Errorf("node key %d: expected PageId(%d), got PageId(%d)",
 				binary.BigEndian.Uint64(tt.key), tt.expected.ToU64(), result.ToU64())
 		}
 	}

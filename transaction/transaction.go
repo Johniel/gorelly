@@ -56,8 +56,17 @@ func NewTransaction(id TransactionID) *Transaction {
 	}
 }
 
+// Begin initializes the transaction state.
+func (txn *Transaction) Begin() {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	txn.State = TransactionStateActive
+	txn.StartTime = time.Now()
+}
+
 // Commit commits the transaction.
-// It transitions the transaction to committed state and then to terminated.
+// Note: This method only updates the transaction state.
+// For full commit with logging and lock release, use TransactionManager.Commit().
 func (txn *Transaction) Commit() error {
 	txn.mu.Lock()
 	defer txn.mu.Unlock()
@@ -70,13 +79,12 @@ func (txn *Transaction) Commit() error {
 	}
 
 	txn.State = TransactionStateCommitted
-	// In a full implementation, we would flush log records here
-	// and then transition to terminated after releasing locks
 	return nil
 }
 
 // Abort aborts the transaction.
-// It transitions the transaction to failed, then aborted, then terminated.
+// Note: This method only updates the transaction state.
+// For full abort with rollback, logging, and lock release, use TransactionManager.Abort().
 func (txn *Transaction) Abort() error {
 	txn.mu.Lock()
 	defer txn.mu.Unlock()
@@ -90,9 +98,7 @@ func (txn *Transaction) Abort() error {
 	}
 
 	txn.State = TransactionStateFailed
-	// In a full implementation, we would perform rollback here
 	txn.State = TransactionStateAborted
-	// After releasing locks, transition to terminated
 	return nil
 }
 
@@ -119,16 +125,18 @@ func (txn *Transaction) IsAborted() bool {
 
 // TransactionManager manages all transactions in the database.
 // It assigns transaction IDs and tracks active transactions.
+// It integrates with LogManager for WAL and LockManager for concurrency control.
 type TransactionManager struct {
 	nextTxnID       TransactionID
 	activeTxns      map[TransactionID]*Transaction
-	logManager      *LogManager
-	lockManager     *LockManager
-	recoveryManager *RecoveryManager
+	logManager      *LogManager      // Optional: for WAL logging
+	lockManager     *LockManager     // Optional: for lock management
+	recoveryManager *RecoveryManager // Optional: for rollback operations
 	mu              sync.RWMutex
 }
 
 // NewTransactionManager creates a new transaction manager.
+// For full transaction support with logging and locking, use NewTransactionManagerWithManagers.
 func NewTransactionManager() *TransactionManager {
 	return &TransactionManager{
 		nextTxnID:  1,
@@ -161,6 +169,7 @@ func (tm *TransactionManager) SetManagers(logManager *LogManager, lockManager *L
 }
 
 // Begin starts a new transaction and returns it.
+// If LogManager is configured, it writes a Begin log record.
 func (tm *TransactionManager) Begin() *Transaction {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -185,22 +194,15 @@ func (tm *TransactionManager) Begin() *Transaction {
 }
 
 // Commit commits a transaction.
+// It writes a Commit log record, flushes the log, releases all locks, and transitions to Terminated state.
 func (tm *TransactionManager) Commit(txn *Transaction) error {
-
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	// First, validate and transition to committed state using Transaction.Commit
+	// Validate and transition to committed state using Transaction.Commit
+	// Note: Transaction.Commit locks txn.mu internally, which is safe here
 	if err := txn.Commit(); err != nil {
 		return err
-	}
-
-	// Check transaction state
-	if txn.State != TransactionStateActive {
-		if txn.State == TransactionStateCommitted {
-			return ErrTransactionAlreadyCommitted
-		}
-		return ErrTransactionNotActive
 	}
 
 	// Write Commit log record if LogManager is configured
@@ -210,6 +212,8 @@ func (tm *TransactionManager) Commit(txn *Transaction) error {
 			TxnID: txn.ID,
 		}
 		if err := tm.logManager.AppendLog(commitRecord); err != nil {
+			// If log write fails, we should rollback the transaction state
+			// For now, we'll return the error and let the caller handle it
 			return err
 		}
 		// Flush log to ensure durability
@@ -218,14 +222,12 @@ func (tm *TransactionManager) Commit(txn *Transaction) error {
 		}
 	}
 
-	// Transition to committed state
-	txn.State = TransactionStateCommitted
-
 	// Release all locks if LockManager is configured
 	if tm.lockManager != nil {
 		tm.lockManager.UnlockAll(txn)
 	}
 
+	// Remove from active transactions and transition to terminated
 	delete(tm.activeTxns, txn.ID)
 	txn.State = TransactionStateTerminated
 
@@ -233,11 +235,14 @@ func (tm *TransactionManager) Commit(txn *Transaction) error {
 }
 
 // Abort aborts a transaction.
+// It performs rollback, writes an Abort log record, releases all locks, and transitions to Terminated state.
 func (tm *TransactionManager) Abort(txn *Transaction) error {
-
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
+	// Validate and transition to aborted state using Transaction.Abort
+	// Note: Transaction.Abort transitions to Failed then Aborted state
+	// Transaction.Abort locks txn.mu internally, which is safe here
 	if err := txn.Abort(); err != nil {
 		// If already terminated, return early
 		if txn.State == TransactionStateTerminated {
@@ -246,20 +251,14 @@ func (tm *TransactionManager) Abort(txn *Transaction) error {
 		// For other errors, continue with abort process
 	}
 
-	if txn.State == TransactionStateTerminated {
-		return nil
-	}
-
-	if txn.State == TransactionStateAborted {
-		return ErrTransactionAlreadyAborted
-	}
-
-	txn.State = TransactionStateFailed
+	// Perform rollback if RecoveryManager is configured
 	if tm.recoveryManager != nil {
 		if err := tm.recoveryManager.Rollback(txn); err != nil {
-
+			// Log error but continue with abort process
+			// The transaction will still be aborted even if rollback fails
 		}
 	}
+
 	// Write Abort log record if LogManager is configured
 	if tm.logManager != nil {
 		abortRecord := &LogRecord{
@@ -270,13 +269,12 @@ func (tm *TransactionManager) Abort(txn *Transaction) error {
 		_ = tm.logManager.AppendLog(abortRecord)
 	}
 
-	txn.State = TransactionStateAborted
-
 	// Release all locks if LockManager is configured
 	if tm.lockManager != nil {
 		tm.lockManager.UnlockAll(txn)
 	}
 
+	// Remove from active transactions and transition to terminated
 	delete(tm.activeTxns, txn.ID)
 	txn.State = TransactionStateTerminated
 
@@ -291,7 +289,7 @@ func (tm *TransactionManager) GetTransaction(txnID TransactionID) (*Transaction,
 	return txn, ok
 }
 
-// RID represents a Tuple(Record) ID (page ID + slot ID).
+// RID represents a Tuple ID (page ID + slot ID).
 type RID struct {
 	PageID disk.PageID
 	SlotID int

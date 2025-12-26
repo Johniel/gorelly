@@ -12,6 +12,8 @@ import (
 var (
 	// ErrDuplicateKey is returned when attempting to insert a key that already exists.
 	ErrDuplicateKey = errors.New("duplicate key")
+	// ErrKeyNotFound is returned when attempting to update or delete a key that doesn't exist.
+	ErrKeyNotFound = errors.New("key not found")
 )
 
 // SearchMode specifies how to search in a B+ tree.
@@ -35,13 +37,13 @@ type BTree struct {
 }
 
 func CreateBTree(bufmgr *buffer.BufferPoolManager) (*BTree, error) {
-	metaBuffer, err := bufmgr.CreatePage()
+	metaBuffer, err := bufmgr.CreateBuffer()
 	if err != nil {
 		return nil, err
 	}
 	meta := NewMeta(metaBuffer.Page[:])
 
-	rootBuffer, err := bufmgr.CreatePage()
+	rootBuffer, err := bufmgr.CreateBuffer()
 	if err != nil {
 		return nil, err
 	}
@@ -59,13 +61,13 @@ func NewBTree(metaPageId disk.PageID) *BTree {
 }
 
 func (bt *BTree) FetchRootPage(bufmgr *buffer.BufferPoolManager) (*buffer.Buffer, error) {
-	metaBuffer, err := bufmgr.FetchPage(bt.MetaPageID)
+	metaBuffer, err := bufmgr.FetchBuffer(bt.MetaPageID)
 	if err != nil {
 		return nil, err
 	}
 	meta := NewMeta(metaBuffer.Page[:])
-	rootPageID := meta.header.RootPageID
-	return bufmgr.FetchPage(rootPageID)
+	rootPageId := meta.RootPageID()
+	return bufmgr.FetchBuffer(rootPageId)
 }
 
 func (bt *BTree) Search(bufmgr *buffer.BufferPoolManager, searchMode SearchMode) (*Iter, error) {
@@ -76,11 +78,7 @@ func (bt *BTree) Search(bufmgr *buffer.BufferPoolManager, searchMode SearchMode)
 	return bt.searchInternal(bufmgr, rootPage, searchMode)
 }
 
-func (bt *BTree) searchInternal(
-	bufmgr *buffer.BufferPoolManager,
-	nodeBuffer *buffer.Buffer,
-	searchMode SearchMode,
-) (*Iter, error) {
+func (bt *BTree) searchInternal(bufmgr *buffer.BufferPoolManager, nodeBuffer *buffer.Buffer, searchMode SearchMode) (*Iter, error) {
 	node := NewNode(nodeBuffer.Page[:])
 
 	if node.IsLeaf() {
@@ -106,14 +104,14 @@ func (bt *BTree) searchInternal(
 		}
 		return iter, nil
 	} else if node.IsBranch() {
-		branchNode := node.AsBranch()
-		var childPageID disk.PageID
+		internalNode := node.AsBranch()
+		var childPageId disk.PageID
 		if searchMode.IsStart {
-			childPageID = branchNode.ChildAt(0)
+			childPageId = internalNode.ChildAt(0)
 		} else {
-			childPageID = branchNode.SearchChild(searchMode.Key)
+			childPageId = internalNode.SearchChild(searchMode.Key)
 		}
-		childNodePage, err := bufmgr.FetchPage(childPageID)
+		childNodePage, err := bufmgr.FetchBuffer(childPageId)
 		if err != nil {
 			return nil, err
 		}
@@ -122,74 +120,72 @@ func (bt *BTree) searchInternal(
 	panic("unknown node type")
 }
 
-func (bt *BTree) Insert(
-	bufmgr *buffer.BufferPoolManager,
-	key []byte,
-	value []byte,
-) error {
-	metaBuffer, err := bufmgr.FetchPage(bt.MetaPageID)
+func (bt *BTree) Insert(bufmgr *buffer.BufferPoolManager, key []byte, value []byte) error {
+	metaBuffer, err := bufmgr.FetchBuffer(bt.MetaPageID)
 	if err != nil {
 		return err
 	}
 	meta := NewMeta(metaBuffer.Page[:])
-	rootPageID := meta.RootPageID()
-	rootBuffer, err := bufmgr.FetchPage(rootPageID)
+	rootPageId := meta.RootPageID()
+	rootBuffer, err := bufmgr.FetchBuffer(rootPageId)
 	if err != nil {
 		return err
 	}
 
-	overflow, err := bt.insertInternal(bufmgr, rootBuffer, key, value)
+	split, err := bt.insertInternal(bufmgr, rootBuffer, key, value)
 	if err != nil {
 		return err
 	}
 
-	if overflow != nil {
-		newRootBuffer, err := bufmgr.CreatePage()
+	if split != nil {
+		newRootBuffer, err := bufmgr.CreateBuffer()
 		if err != nil {
 			return err
 		}
 		node := NewNode(newRootBuffer.Page[:])
 		node.InitializeAsBranch()
-		branchNode := node.AsBranch()
-		branchNode.Initialize(overflow.Key, overflow.ChildPageID, rootPageID)
+		internalNode := node.AsBranch()
+		internalNode.Initialize(split.Key, split.ChildPageId, rootPageId)
 		meta.SetRootPageID(newRootBuffer.PageID)
 		metaBuffer.IsDirty = true
 	}
 	return nil
 }
 
-func (bt *BTree) insertInternal(
-	bufmgr *buffer.BufferPoolManager,
-	nodeBuf *buffer.Buffer,
-	key []byte,
-	value []byte,
-) (*Overflow, error) {
+// Split represents information propagated to the parent node when a node splits.
+// It contains the promoted key and the page ID of the newly created child node.
+type Split struct {
+	Key         []byte      // Promoted key (minimum key of the new node)
+	ChildPageId disk.PageID // Page ID of the newly created child node
+}
+
+func (bt *BTree) insertInternal(bufmgr *buffer.BufferPoolManager, nodeBuf *buffer.Buffer, key []byte, value []byte) (*Split, error) {
 	node := NewNode(nodeBuf.Page[:])
 
 	if node.IsLeaf() {
 		leafNode := node.AsLeaf()
-		slotId, err := leafNode.SearchSlotID(key)
+		slotID, err := leafNode.SearchSlotID(key)
 		if err == nil {
 			return nil, ErrDuplicateKey
 		}
 
-		if leafNode.Insert(slotId, key, value) {
+		if leafNode.Insert(slotID, key, value) {
 			nodeBuf.IsDirty = true
 			return nil, nil
 		}
 
 		// Need to split
-		prevLeafPageID := leafNode.PrevPageID()
+		prevLeafPageId := leafNode.PrevPageID()
 		var prevLeafBuffer *buffer.Buffer
-		if prevLeafPageID.Valid() {
+		if prevLeafPageId.Valid() {
 			var err error
-			prevLeafBuffer, err = bufmgr.FetchPage(prevLeafPageID)
+			prevLeafBuffer, err = bufmgr.FetchBuffer(prevLeafPageId)
 			if err != nil {
 				return nil, err
 			}
 		}
 
-		newLeafBuffer, err := bufmgr.CreatePage()
+		newLeafBuffer, err := bufmgr.CreateBuffer()
 		if err != nil {
 			return nil, err
 		}
@@ -206,59 +202,95 @@ func (bt *BTree) insertInternal(
 		newLeafNode.InitializeAsLeaf()
 		newLeaf := newLeafNode.AsLeaf()
 		newLeaf.Initialize()
-		overflowKey := leafNode.SplitInsert(newLeaf, key, value)
+		splitKey := leafNode.SplitInsert(newLeaf, key, value)
 		newLeaf.SetNextPageID(nodeBuf.PageID)
-		if prevLeafPageID.Valid() {
-			newLeaf.SetPrevPageID(prevLeafPageID)
+		if prevLeafPageId.Valid() {
+			newLeaf.SetPrevPageID(prevLeafPageId)
 		}
 		nodeBuf.IsDirty = true
-		return &Overflow{
-			Key:         overflowKey,
-			ChildPageID: newLeafBuffer.PageID,
-		}, nil
+		return &Split{Key: splitKey, ChildPageId: newLeafBuffer.PageID}, nil
 	} else if node.IsBranch() {
-		branchNode := node.AsBranch()
-		childIndex := branchNode.SearchChildIndex(key)
-		childPageID := branchNode.ChildAt(childIndex)
-		childNodeBuffer, err := bufmgr.FetchPage(childPageID)
+		internalNode := node.AsBranch()
+		childIdx := internalNode.SearchChildIdx(key)
+		childPageId := internalNode.ChildAt(childIdx)
+		childNodeBuffer, err := bufmgr.FetchBuffer(childPageId)
 		if err != nil {
 			return nil, err
 		}
 
-		overflow, err := bt.insertInternal(bufmgr, childNodeBuffer, key, value)
+		split, err := bt.insertInternal(bufmgr, childNodeBuffer, key, value)
 		if err != nil {
 			return nil, err
 		}
 
-		if overflow != nil {
-			if branchNode.Insert(childIndex, overflow.Key, overflow.ChildPageID) {
+		if split != nil {
+			if internalNode.Insert(childIdx, split.Key, split.ChildPageId) {
 				nodeBuf.IsDirty = true
 				return nil, nil
 			}
 
-			// Need to split branch
-			newBranchBuffer, err := bufmgr.CreatePage()
+			// Need to split internal node
+			newInternalBuffer, err := bufmgr.CreateBuffer()
 			if err != nil {
 				return nil, err
 			}
-			newBranchNode := NewNode(newBranchBuffer.Page[:])
-			newBranchNode.InitializeAsBranch()
-			newBranch := newBranchNode.AsBranch()
-			overflowKey := branchNode.SplitInsert(newBranch, overflow.Key, overflow.ChildPageID)
+			newInternalNodeWrapper := NewNode(newInternalBuffer.Page[:])
+			newInternalNodeWrapper.InitializeAsBranch()
+			newInternalNode := newInternalNodeWrapper.AsBranch()
+			splitKey := internalNode.SplitInsert(newInternalNode, split.Key, split.ChildPageId)
 			nodeBuf.IsDirty = true
-			newBranchBuffer.IsDirty = true
-			return &Overflow{
-				Key:         overflowKey,
-				ChildPageID: newBranchBuffer.PageID,
-			}, nil
+			newInternalBuffer.IsDirty = true
+			return &Split{Key: splitKey, ChildPageId: newInternalBuffer.PageID}, nil
 		}
+		return nil, nil
 	}
 	panic("unknown node type")
 }
 
-type Overflow struct {
-	Key         []byte
-	ChildPageID disk.PageID
+// Update updates the value for an existing key in the B+ tree.
+// It returns ErrKeyNotFound if the key doesn't exist.
+func (bt *BTree) Update(bufmgr *buffer.BufferPoolManager, key []byte, newValue []byte) error {
+	metaBuffer, err := bufmgr.FetchBuffer(bt.MetaPageID)
+	if err != nil {
+		return err
+	}
+	meta := NewMeta(metaBuffer.Page[:])
+	rootPageId := meta.RootPageID()
+	rootBuffer, err := bufmgr.FetchBuffer(rootPageId)
+	if err != nil {
+		return err
+	}
+
+	return bt.updateInternal(bufmgr, rootBuffer, key, newValue)
+}
+
+func (bt *BTree) updateInternal(bufmgr *buffer.BufferPoolManager, nodeBuf *buffer.Buffer, key []byte, newValue []byte) error {
+	node := NewNode(nodeBuf.Page[:])
+
+	if node.IsLeaf() {
+		leafNode := node.AsLeaf()
+		slotID, err := leafNode.SearchSlotID(key)
+		if err != nil {
+			return ErrKeyNotFound
+		}
+
+		if leafNode.Update(slotID, newValue) {
+			nodeBuf.IsDirty = true
+			return nil
+		}
+		return ErrKeyNotFound
+	} else if node.IsBranch() {
+		internalNode := node.AsBranch()
+		childIdx := internalNode.SearchChildIdx(key)
+		childPageId := internalNode.ChildAt(childIdx)
+		childNodeBuffer, err := bufmgr.FetchBuffer(childPageId)
+		if err != nil {
+			return err
+		}
+
+		return bt.updateInternal(bufmgr, childNodeBuffer, key, newValue)
+	}
+	panic("unknown node type")
 }
 
 // Iter is an iterator for traversing key-value pairs in a B+ tree.
@@ -272,7 +304,7 @@ type Iter struct {
 // It returns the key, value, and a boolean indicating whether a pair was found.
 // If the iterator is at the end or not positioned on a valid leaf node, it returns (nil, nil, false).
 // The returned key and value are copies, so modifications to them will not affect the stored data.
-func (it *Iter) Get() (key []byte, vaue []byte, found bool) {
+func (it *Iter) Get() ([]byte, []byte, bool) {
 	node := NewNode(it.buffer.Page[:])
 	if !node.IsLeaf() {
 		return nil, nil, false
@@ -292,7 +324,7 @@ func (it *Iter) Get() (key []byte, vaue []byte, found bool) {
 // Advance moves the iterator to the next position.
 // If the current slot is not the last in the leaf node, it increments the slot index.
 // If the current slot is the last in the leaf node, it moves to the next leaf page
-// by following the NextPageId link and resets the slot index to 0.
+// by following the NextPageID link and resets the slot index to 0.
 // If there is no next page, the iterator remains at the end position.
 // Returns an error if fetching the next page fails.
 func (it *Iter) Advance(bufmgr *buffer.BufferPoolManager) error {
@@ -305,9 +337,9 @@ func (it *Iter) Advance(bufmgr *buffer.BufferPoolManager) error {
 	if it.slotID < leafNode.NumPairs() {
 		return nil
 	}
-	nextPageID := leafNode.NextPageID()
-	if nextPageID.Valid() {
-		nextBuffer, err := bufmgr.FetchPage(nextPageID)
+	nextPageId := leafNode.NextPageID()
+	if nextPageId.Valid() {
+		nextBuffer, err := bufmgr.FetchBuffer(nextPageId)
 		if err != nil {
 			return err
 		}

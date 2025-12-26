@@ -34,6 +34,18 @@ func (st *SimpleTable) Insert(bufmgr *buffer.BufferPoolManager, tup [][]byte) er
 	return bt.Insert(bufmgr, keyBytes, valueBytes)
 }
 
+// Update updates an existing tuple in the table.
+// The tuple is identified by its primary key (first NumKeyElems elements).
+// Returns an error if the key is not found.
+func (st *SimpleTable) Update(bufmgr *buffer.BufferPoolManager, tup [][]byte) error {
+	bt := btree.NewBTree(st.MetaPageID)
+	keyBytes := make([]byte, 0)
+	tuple.Encode(tup[:st.NumKeyElems], &keyBytes)
+	valueBytes := make([]byte, 0)
+	tuple.Encode(tup[st.NumKeyElems:], &valueBytes)
+	return bt.Update(bufmgr, keyBytes, valueBytes)
+}
+
 // Table represents a table with support for unique secondary indexes.
 // Tuples are stored in a B+ tree, and additional B+ trees are maintained for each unique index.
 type Table struct {
@@ -71,6 +83,15 @@ func (t *Table) Insert(bufmgr *buffer.BufferPoolManager, tup [][]byte) error {
 		}
 	}
 	return nil
+}
+
+func (t *Table) Update(bufmgr *buffer.BufferPoolManager, tup [][]byte) error {
+	bt := btree.NewBTree(t.MetaPageID)
+	keyBytes := make([]byte, 0)
+	tuple.Encode(tup[:t.NumKeyElems], &keyBytes)
+	valueBytes := make([]byte, 0)
+	tuple.Encode(tup[t.NumKeyElems:], &valueBytes)
+	return bt.Update(bufmgr, keyBytes, valueBytes)
 }
 
 // UniqueIndex represents a unique secondary index on a table.

@@ -46,7 +46,7 @@ type Buffer struct {
 
 **現在の実装:**
 ```go
-func (bpm *BufferPoolManager) FetchPage(pageId disk.PageId) (*Buffer, error)
+func (bpm *BufferPoolManager) FetchBuffer(pageId disk.PageId) (*Buffer, error)
 ```
 
 **問題点:**
@@ -55,7 +55,7 @@ func (bpm *BufferPoolManager) FetchPage(pageId disk.PageId) (*Buffer, error)
 - メソッド名と返り値の型が不一致
 
 **一般的な命名:**
-- `FetchPage()` → `Page*`を返す（メタデータ管理は別API）
+- `FetchBuffer()` → `Page*`を返す（メタデータ管理は別API）
 - または、`FetchBuffer()` → `Buffer*`を返す
 
 **推奨される変更:**
@@ -71,18 +71,18 @@ func (bpm *BufferPoolManager) FetchPage(pageId disk.PageId) (*Buffer, error)
 
 ---
 
-### 3. CreatePageメソッド (`internal/buffer/buffer.go`)
+### 3. CreateBufferメソッド (`internal/buffer/buffer.go`)
 
 **現在の実装:**
 ```go
-func (bpm *BufferPoolManager) CreatePage() (*Buffer, error)
+func (bpm *BufferPoolManager) CreateBuffer() (*Buffer, error)
 ```
 
 **問題点:**
 - `FetchPage`と同様に、返り値が`*Buffer`であることをメソッド名から推測できない
 
 **一般的な命名:**
-- `CreatePage()` → `Page*`を返す
+- `CreateBuffer()` → `Page*`を返す
 - または、`CreateBuffer()` → `Buffer*`を返す
 
 **推奨される変更:**
@@ -220,7 +220,7 @@ type Branch struct {
 
 1. **高優先度:**
    - `FetchPage` → `FetchBuffer` へのリネーム
-   - `CreatePage` → `CreateBuffer` へのリネーム
+   - `CreateBuffer` → `CreateBuffer` へのリネーム
    - `Overflow` → `Split` へのリネーム
    - 理由: メソッド名と返り値の不一致、学術的な命名規則との不一致は混乱を招く
 

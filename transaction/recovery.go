@@ -46,7 +46,7 @@ func (rm *RecoveryManager) Rollback(txn *Transaction) error {
 }
 
 func (rm *RecoveryManager) undoUpdate(record *LogRecord) error {
-	buf, err := rm.bufmgr.FetchPage(record.PageID)
+	buf, err := rm.bufmgr.FetchBuffer(record.PageID)
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func (rm *RecoveryManager) undoUpdate(record *LogRecord) error {
 
 // redoUpdate redoes a single update operation.
 func (rm *RecoveryManager) redoUpdate(record *LogRecord) error {
-	buf, err := rm.bufmgr.FetchPage(record.PageID)
+	buf, err := rm.bufmgr.FetchBuffer(record.PageID)
 	if err != nil {
 		return err
 	}

@@ -26,14 +26,14 @@ func (p PageID) ToU64() uint64 {
 	return uint64(p)
 }
 
+func PageIDFromBytes(bytes []byte) PageID {
+	return PageID(binary.LittleEndian.Uint64(bytes))
+}
+
 func (p PageID) ToBytes() []byte {
 	bytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(bytes, uint64(p))
 	return bytes
-}
-
-func PageIDFromBytes(bytes []byte) PageID {
-	return PageID(binary.LittleEndian.Uint64(bytes))
 }
 
 // DiskManager manages disk I/O operations for the database.
@@ -41,7 +41,7 @@ func PageIDFromBytes(bytes []byte) PageID {
 // The heap file is organized as a sequence of fixed-size pages.
 type DiskManager struct {
 	heapFile   *os.File
-	nextPageId uint64
+	nextPageID uint64
 }
 
 func NewDiskManager(heapFile *os.File) (*DiskManager, error) {
@@ -50,10 +50,10 @@ func NewDiskManager(heapFile *os.File) (*DiskManager, error) {
 		return nil, err
 	}
 	heapFileSize := stat.Size()
-	nextPageId := uint64(heapFileSize) / PageSize
+	nextPageID := uint64(heapFileSize) / PageSize
 	return &DiskManager{
 		heapFile:   heapFile,
-		nextPageId: nextPageId,
+		nextPageID: nextPageID,
 	}, nil
 }
 
@@ -75,8 +75,8 @@ func (dm *DiskManager) ReadPageData(pageID PageID, data []byte) error {
 	return err
 }
 
-func (dm *DiskManager) WritePageData(pageId PageID, data []byte) error {
-	offset := int64(PageSize) * int64(pageId.ToU64())
+func (dm *DiskManager) WritePageData(pageID PageID, data []byte) error {
+	offset := int64(PageSize) * int64(pageID.ToU64())
 	_, err := dm.heapFile.Seek(offset, io.SeekStart)
 	if err != nil {
 		return err
@@ -86,13 +86,16 @@ func (dm *DiskManager) WritePageData(pageId PageID, data []byte) error {
 }
 
 func (dm *DiskManager) AllocatePage() PageID {
-	pageID := dm.nextPageId
-	dm.nextPageId++
+	pageID := dm.nextPageID
+	dm.nextPageID++
 	return PageID(pageID)
 }
 
 func (dm *DiskManager) Sync() error {
-	return dm.heapFile.Sync()
+	if err := dm.heapFile.Sync(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (dm *DiskManager) Close() error {

@@ -15,8 +15,8 @@ var (
 	ErrNoFreeBuffer = errors.New("no free buffer available in buffer pool")
 )
 
-// BufferID identifies a buffer slot in the buffer pool.
-type BufferID uint
+// BufferId identifies a buffer slot in the buffer pool.
+type BufferId uint
 
 // Page represents a fixed-size page (4096 bytes).
 type Page = [disk.PageSize]byte
@@ -24,10 +24,10 @@ type Page = [disk.PageSize]byte
 // Buffer represents a cached page in memory.
 // It contains the page data and metadata about its state.
 type Buffer struct {
-	PageID  disk.PageID
-	Page    *Page
-	IsDirty bool
-	mu      sync.Mutex
+	PageID  disk.PageID // The page ID this buffer represents
+	Page    *Page       // The actual page data
+	IsDirty bool        // Whether the page has been modified and needs to be written back
+	mu      sync.RWMutex
 }
 
 func NewBuffer() *Buffer {
@@ -49,7 +49,7 @@ type Frame struct {
 // It implements a clock replacement algorithm to evict pages when the pool is full.
 type BufferPool struct {
 	buffers      []*Frame
-	nextVictimID BufferID // Next buffer to consider for eviction (clock hand)
+	nextVictimId BufferId // Next buffer to consider for eviction (clock hand)
 	mu           sync.Mutex
 }
 
@@ -62,7 +62,7 @@ func NewBufferPool(poolSize int) *BufferPool {
 	}
 	return &BufferPool{
 		buffers:      buffers,
-		nextVictimID: 0,
+		nextVictimId: 0,
 	}
 }
 
@@ -70,7 +70,7 @@ func (bp *BufferPool) Size() int {
 	return len(bp.buffers)
 }
 
-func (bp *BufferPool) Evict() (BufferID, bool) {
+func (bp *BufferPool) Evict() (BufferId, bool) {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
@@ -78,13 +78,13 @@ func (bp *BufferPool) Evict() (BufferID, bool) {
 	consecutivePinned := 0
 
 	for {
-		nextVictimID := bp.nextVictimID
-		frame := bp.buffers[nextVictimID]
-		frame.mu.Lock()
+		nextVictimId := bp.nextVictimId
+		frame := bp.buffers[nextVictimId]
 
+		frame.mu.Lock()
 		if frame.UsageCount == 0 {
 			frame.mu.Unlock()
-			return nextVictimID, true
+			return nextVictimId, true
 		}
 
 		// Check if buffer is still referenced elsewhere
@@ -102,7 +102,7 @@ func (bp *BufferPool) Evict() (BufferID, bool) {
 		}
 		frame.mu.Unlock()
 
-		bp.nextVictimID = BufferID((uint(nextVictimID) + 1) % uint(poolSize))
+		bp.nextVictimId = BufferId((uint(nextVictimId) + 1) % uint(poolSize))
 	}
 }
 
@@ -112,7 +112,7 @@ func (bp *BufferPool) Evict() (BufferID, bool) {
 type BufferPoolManager struct {
 	disk      *disk.DiskManager
 	pool      *BufferPool
-	pageTable map[disk.PageID]BufferID // Maps page IDs to buffer slots
+	pageTable map[disk.PageID]BufferId // Maps page IDs to buffer slots
 	mu        sync.RWMutex
 }
 
@@ -120,28 +120,30 @@ func NewBufferPoolManager(dm *disk.DiskManager, pool *BufferPool) *BufferPoolMan
 	return &BufferPoolManager{
 		disk:      dm,
 		pool:      pool,
-		pageTable: map[disk.PageID]BufferID{},
+		pageTable: make(map[disk.PageID]BufferId),
 	}
 }
 
-func (bpm *BufferPoolManager) FetchPage(pageID disk.PageID) (*Buffer, error) {
+// FetchBuffer retrieves a page from the buffer pool or loads it from disk if not already in memory.
+// It returns a Buffer containing the page data and metadata.
+func (bpm *BufferPoolManager) FetchBuffer(pageID disk.PageID) (*Buffer, error) {
 	bpm.mu.Lock()
 	defer bpm.mu.Unlock()
 
-	if bufferID, ok := bpm.pageTable[pageID]; ok {
-		frame := bpm.pool.buffers[bufferID]
+	if bufferId, ok := bpm.pageTable[pageID]; ok {
+		frame := bpm.pool.buffers[bufferId]
 		frame.mu.Lock()
 		frame.UsageCount++
 		frame.mu.Unlock()
 		return frame.Buffer, nil
 	}
 
-	bufferID, ok := bpm.pool.Evict()
+	bufferId, ok := bpm.pool.Evict()
 	if !ok {
 		return nil, ErrNoFreeBuffer
 	}
 
-	frame := bpm.pool.buffers[bufferID]
+	frame := bpm.pool.buffers[bufferId]
 	frame.mu.Lock()
 	defer frame.mu.Unlock()
 
@@ -161,22 +163,26 @@ func (bpm *BufferPoolManager) FetchPage(pageID disk.PageID) (*Buffer, error) {
 		// If EOF, page doesn't exist yet, initialize with zeros
 		*frame.Buffer.Page = Page{}
 	}
+	frame.UsageCount = 1
 
 	delete(bpm.pageTable, evictPageID)
-	bpm.pageTable[pageID] = bufferID
+	bpm.pageTable[pageID] = bufferId
+
 	return frame.Buffer, nil
 }
 
-func (bpm *BufferPoolManager) CreatePage() (*Buffer, error) {
+// CreateBuffer allocates a new page and returns a Buffer containing it.
+// The returned buffer is marked as dirty.
+func (bpm *BufferPoolManager) CreateBuffer() (*Buffer, error) {
 	bpm.mu.Lock()
 	defer bpm.mu.Unlock()
 
-	bufferID, ok := bpm.pool.Evict()
+	bufferId, ok := bpm.pool.Evict()
 	if !ok {
 		return nil, ErrNoFreeBuffer
 	}
 
-	frame := bpm.pool.buffers[bufferID]
+	frame := bpm.pool.buffers[bufferId]
 	frame.mu.Lock()
 	defer frame.mu.Unlock()
 
@@ -190,10 +196,11 @@ func (bpm *BufferPoolManager) CreatePage() (*Buffer, error) {
 	pageID := bpm.disk.AllocatePage()
 	*frame.Buffer = *NewBuffer()
 	frame.Buffer.PageID = pageID
+	frame.Buffer.IsDirty = true
 	frame.UsageCount = 1
 
 	delete(bpm.pageTable, evictPageID)
-	bpm.pageTable[pageID] = bufferID
+	bpm.pageTable[pageID] = bufferId
 
 	return frame.Buffer, nil
 }
@@ -202,8 +209,8 @@ func (bpm *BufferPoolManager) Flush() error {
 	bpm.mu.RLock()
 	defer bpm.mu.RUnlock()
 
-	for pageID, bufferID := range bpm.pageTable {
-		frame := bpm.pool.buffers[bufferID]
+	for pageID, bufferId := range bpm.pageTable {
+		frame := bpm.pool.buffers[bufferId]
 		frame.mu.RLock()
 		if frame.Buffer.IsDirty {
 			if err := bpm.disk.WritePageData(pageID, frame.Buffer.Page[:]); err != nil {

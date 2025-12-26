@@ -134,6 +134,27 @@ func (ef *ExecFilter) Next(bufmgr *buffer.BufferPoolManager) (Tuple, bool, error
 	}
 }
 
+type IndexScan struct {
+	TableMetaPageID disk.PageID
+	IndexMetaPageID disk.PageID
+	SearchMode      TupleSearchMode
+	WhileCond       func(TupleSlice) bool
+}
+
+func (is *IndexScan) Start(bufmgr *buffer.BufferPoolManager) (Executor, error) {
+	tableBtree := btree.NewBTree(is.TableMetaPageID)
+	indexBtree := btree.NewBTree(is.IndexMetaPageID)
+	indexIter, err := indexBtree.Search(bufmgr, is.SearchMode.Encode())
+	if err != nil {
+		return nil, err
+	}
+	return &ExecIndexScan{
+		tableBtree: tableBtree,
+		indexIter:  indexIter,
+		whileCond:  is.WhileCond,
+	}, nil
+}
+
 // ExecIndexScan is the executor for index scan operations.
 type ExecIndexScan struct {
 	tableBtree *btree.BTree

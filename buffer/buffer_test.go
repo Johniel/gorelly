@@ -27,22 +27,22 @@ func TestBufferPoolManager(t *testing.T) {
 	hello := make([]byte, disk.PageSize)
 	copy(hello, []byte("hello"))
 
-	var page1ID disk.PageID
+	var page1Id disk.PageID
 	{
-		buffer, err := bufmgr.CreatePage()
+		buffer, err := bufmgr.CreateBuffer()
 		if err != nil {
 			t.Fatal(err)
 		}
 		copy(buffer.Page[:], hello)
 		buffer.IsDirty = true
-		page1ID = buffer.PageID
+		page1Id = buffer.PageID
 		// Note: In Go, we can't easily test that second page creation fails
 		// because the buffer pool evicts pages automatically. This is different
 		// from Rust's behavior where we can check reference counts.
 	}
 
 	{
-		buffer, err := bufmgr.FetchPage(page1ID)
+		buffer, err := bufmgr.FetchBuffer(page1Id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,19 +54,19 @@ func TestBufferPoolManager(t *testing.T) {
 	world := make([]byte, disk.PageSize)
 	copy(world, []byte("world"))
 
-	var page2ID disk.PageID
+	var page2Id disk.PageID
 	{
-		buffer, err := bufmgr.CreatePage()
+		buffer, err := bufmgr.CreateBuffer()
 		if err != nil {
 			t.Fatal(err)
 		}
 		copy(buffer.Page[:], world)
 		buffer.IsDirty = true
-		page2ID = buffer.PageID
+		page2Id = buffer.PageID
 	}
 
 	{
-		buffer, err := bufmgr.FetchPage(page1ID)
+		buffer, err := bufmgr.FetchBuffer(page1Id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +76,7 @@ func TestBufferPoolManager(t *testing.T) {
 	}
 
 	{
-		buffer, err := bufmgr.FetchPage(page2ID)
+		buffer, err := bufmgr.FetchBuffer(page2Id)
 		if err != nil {
 			t.Fatal(err)
 		}

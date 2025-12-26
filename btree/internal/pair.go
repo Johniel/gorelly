@@ -1,4 +1,4 @@
-package branch
+package internal
 
 import (
 	"encoding/binary"

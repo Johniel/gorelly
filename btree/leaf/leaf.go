@@ -3,10 +3,12 @@ package leaf
 import (
 	"unsafe"
 
+	"github.com/Johniel/gorelly/bsearch"
 	"github.com/Johniel/gorelly/disk"
 	"github.com/Johniel/gorelly/slotted"
 )
 
+// LeafHeaderSize is the size of the leaf header (16 bytes: 2 PageIds of 8 bytes each).
 const LeafHeaderSize = 16
 
 // LeafHeader contains metadata for a leaf node.
@@ -29,7 +31,7 @@ type LeafHeader struct {
 // Example: A leaf node with 2 pairs (key1→value1, key2→value2):
 //   - body.Data(0) returns the first Pair (key1, value1)
 //   - body.Data(1) returns the second Pair (key2, value2)
-//   - header.PrevPageId and header.NextPageId link this leaf to adjacent leaves
+//   - header.PrevPageID and header.NextPageID link this leaf to adjacent leaves
 //     for sequential traversal
 type Leaf struct {
 	header *LeafHeader
@@ -72,8 +74,10 @@ func (l *Leaf) NumPairs() int {
 }
 
 func (l *Leaf) SearchSlotID(key []byte) (int, error) {
-	// TODO:
-	return 0, nil
+	return bsearch.BinarySearchBy(l.NumPairs(), func(slotID int) int {
+		pair := l.PairAt(slotID)
+		return compareBytes(pair.Key, key)
+	})
 }
 
 func (l *Leaf) PairAt(slotID int) *Pair {
@@ -91,24 +95,53 @@ func (l *Leaf) Initialize() {
 	l.body.Initialize()
 }
 
-func (l *Leaf) SetPrevPageID(prevPageId disk.PageID) {
-	l.header.PrevPageID = prevPageId
+func (l *Leaf) SetPrevPageID(prevPageID disk.PageID) {
+	l.header.PrevPageID = prevPageID
 }
 
-func (l *Leaf) SetNextPageID(nextPageId disk.PageID) {
-	l.header.NextPageID = nextPageId
+func (l *Leaf) SetNextPageID(nextPageID disk.PageID) {
+	l.header.NextPageID = nextPageID
 }
 
-func (l *Leaf) Insert(slotId int, key []byte, value []byte) bool {
+func (l *Leaf) Insert(slotID int, key []byte, value []byte) bool {
 	pair := &Pair{Key: key, Value: value}
 	pairBytes := pair.ToBytes()
 	if len(pairBytes) > l.MaxPairSize() {
 		return false
 	}
-	if !l.body.Insert(slotId, len(pairBytes)) {
+	if !l.body.Insert(slotID, len(pairBytes)) {
 		return false
 	}
-	copy(l.body.Data(slotId), pairBytes)
+	copy(l.body.Data(slotID), pairBytes)
+	return true
+}
+
+// Update updates the value for an existing key in the leaf node.
+// It returns true if the update was successful, false if the key was not found or if there's not enough space.
+func (l *Leaf) Update(slotID int, newValue []byte) bool {
+	if slotID >= l.NumPairs() {
+		return false
+	}
+	oldPair := l.PairAt(slotID)
+	newPair := &Pair{Key: oldPair.Key, Value: newValue}
+	newPairBytes := newPair.ToBytes()
+	if len(newPairBytes) > l.MaxPairSize() {
+		return false
+	}
+	oldPairBytes := oldPair.ToBytes()
+
+	// Check if we have enough space for the update
+	spaceNeeded := len(newPairBytes) - len(oldPairBytes)
+	if spaceNeeded > l.body.FreeSpace() {
+		return false
+	}
+
+	// Remove old pair and insert new one
+	l.body.Remove(slotID)
+	if !l.body.Insert(slotID, len(newPairBytes)) {
+		return false
+	}
+	copy(l.body.Data(slotID), newPairBytes)
 	return true
 }
 
@@ -147,6 +180,7 @@ func (l *Leaf) Transfer(dest *Leaf) {
 	if !dest.body.Insert(nextIndex, len(data)) {
 		panic("no space in dest leaf")
 	}
+	copy(dest.body.Data(nextIndex), data)
 	l.body.Remove(0)
 }
 

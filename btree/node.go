@@ -4,7 +4,7 @@ package btree
 import (
 	"unsafe"
 
-	"github.com/Johniel/gorelly/btree/branch"
+	"github.com/Johniel/gorelly/btree/internal"
 	"github.com/Johniel/gorelly/btree/leaf"
 )
 
@@ -14,7 +14,9 @@ const NodeHeaderSize = 8
 var (
 	// NodeTypeLeaf identifies a leaf node.
 	NodeTypeLeaf = [8]byte{'L', 'E', 'A', 'F', ' ', ' ', ' ', ' '}
-	// NodeTypeBranch identifies a branch (internal) node.
+	// NodeTypeBranch identifies an internal node.
+	// Note: The on-disk format uses "BRANCH  " for backward compatibility,
+	// but the code uses "InternalNode" terminology.
 	NodeTypeBranch = [8]byte{'B', 'R', 'A', 'N', 'C', 'H', ' ', ' '}
 )
 
@@ -23,11 +25,11 @@ type NodeHeader struct {
 	NodeType [8]byte // Type identifier: "LEAF    " or "BRANCH  "
 }
 
-// Node represents a B+ tree node (either leaf or branch).
+// Node represents a B+ tree node (either leaf or internal).
 // It provides a unified interface for accessing node data.
 type Node struct {
 	header *NodeHeader
-	body   []byte // Node body (leaf or branch data)
+	body   []byte // Node body (leaf or internal node data)
 }
 
 func NewNode(page []byte) *Node {
@@ -66,6 +68,6 @@ func (n *Node) AsLeaf() *leaf.Leaf {
 	return leaf.NewLeaf(n.body)
 }
 
-func (n *Node) AsBranch() *branch.Branch {
-	return branch.NewBranch(n.body)
+func (n *Node) AsBranch() *internal.InternalNode {
+	return internal.NewInternalNode(n.body)
 }

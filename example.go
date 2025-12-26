@@ -4,6 +4,8 @@ package internal
 
 import (
 	"fmt"
+	"os"
+
 	"github.com/Johniel/gorelly/btree"
 	"github.com/Johniel/gorelly/buffer"
 	"github.com/Johniel/gorelly/disk"
@@ -11,7 +13,6 @@ import (
 	"github.com/Johniel/gorelly/table"
 	"github.com/Johniel/gorelly/transaction"
 	"github.com/Johniel/gorelly/tuple"
-	"os"
 )
 
 // ExampleBasicTableCreation demonstrates how to create a simple table and insert tuples.
